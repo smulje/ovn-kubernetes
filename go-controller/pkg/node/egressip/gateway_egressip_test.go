@@ -9,6 +9,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	"github.com/vishvananda/netlink"
+	"github.com/stretchr/testify/mock"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -310,6 +311,30 @@ var _ = ginkgo.Describe("Gateway EgressIP", func() {
 				egressip.GetNetlinkAddress(net.ParseIP(ipV4Addr), bridgeLinkIndex))).Should(gomega.BeTrue())
 			gomega.Expect(nlMock.AssertCalled(ginkgo.GinkgoT(), "AddrAdd", nlLinkMock,
 				egressip.GetNetlinkAddress(net.ParseIP(ipV4Addr2), bridgeLinkIndex))).Should(gomega.BeTrue())
+		})
+
+		ginkgo.It("reconciles stale annotation with actual bridge IPs on startup", func() {
+			nlLinkMock.On("Attrs").Return(&netlink.LinkAttrs{Name: bridgeName, Index: bridgeLinkIndex}, nil)
+			nlMock.On("LinkByName", bridgeName).Return(nlLinkMock, nil)
+			nlMock.On("LinkByIndex", bridgeLinkIndex).Return(nlLinkMock, nil)
+			nlMock.On("LinkList").Return([]netlink.Link{nlLinkMock}, nil)
+			// Bridge already has correct IP configured
+			nlMock.On("AddrList", nlLinkMock, 0).Return([]netlink.Addr{
+				*egressip.GetNetlinkAddress(net.ParseIP(ipV4Addr), bridgeLinkIndex),
+			}, nil)
+			// allow reconciliation operations
+			nlMock.On("AddrAdd", nlLinkMock, mock.Anything).Return(nil)
+			nlMock.On("AddrDel", nlLinkMock, mock.Anything).Return(nil)
+			// Node annotation contains stale IP
+			addrMgr, stopFn := initBridgeEIPAddrManager(nodeName, bridgeName, generateAnnotFromIPs(ipV4Addr2))
+			defer stopFn()
+			err := addrMgr.SyncEgressIP([]interface{}{})
+			gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+			gomega.Eventually(func() []string {
+				node, err := addrMgr.nodeLister.Get(nodeName)
+				gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+				return parseEIPsFromAnnotation(node)
+			}).Should(gomega.ConsistOf(ipV4Addr))
 		})
 
 		ginkgo.It("delete previous configuration", func() {
