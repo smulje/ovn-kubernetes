@@ -184,8 +184,19 @@ func (defaultNetLinkOps) IsAlreadyExistsError(err error) bool {
 	return errors.Is(err, syscall.EEXIST)
 }
 
+// AddrList uses a per-call handle with NETLINK_GET_STRICT_CHK enabled to allow
+// the kernel to filter addresses by ifindex server-side instead of dumping all.
 func (defaultNetLinkOps) AddrList(link netlink.Link, family int) ([]netlink.Addr, error) {
-	return netlink.AddrList(link, family)
+	h, err := netlink.NewHandle(unix.NETLINK_ROUTE)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create netlink handle: %v", err)
+	}
+	defer h.Close()
+	if err := h.SetStrictCheck(true); err != nil {
+		klog.V(5).Infof("Failed to enable strict check on netlink handle, falling back to unfiltered dump: %v", err)
+		return netlink.AddrList(link, family)
+	}
+	return h.AddrList(link, family)
 }
 
 func (defaultNetLinkOps) AddrDel(link netlink.Link, addr *netlink.Addr) error {
@@ -599,6 +610,37 @@ func LinkRouteGetByDstAndGw(link netlink.Link, gwIP net.IP, subnet *net.IPNet) (
 	return route, err
 }
 
+// LinkFDBAdd adds a static FDB entry on the bridge that owns the given port.
+func LinkFDBAdd(port netlink.Link, mac net.HardwareAddr, vlan int) error {
+	neigh := &netlink.Neigh{
+		LinkIndex:    port.Attrs().Index,
+		Family:       syscall.AF_BRIDGE,
+		State:        netlink.NUD_NOARP,
+		Flags:        netlink.NTF_MASTER,
+		Vlan:         vlan,
+		HardwareAddr: mac,
+	}
+	if err := netLinkOps.NeighAdd(neigh); err != nil {
+		return fmt.Errorf("failed to add FDB entry %s vlan %d on %s: %w", mac, vlan, port.Attrs().Name, err)
+	}
+	return nil
+}
+
+// LinkFDBDel deletes a static FDB entry from the bridge that owns the given port.
+func LinkFDBDel(port netlink.Link, mac net.HardwareAddr, vlan int) error {
+	neigh := &netlink.Neigh{
+		LinkIndex:    port.Attrs().Index,
+		Family:       syscall.AF_BRIDGE,
+		Flags:        netlink.NTF_MASTER,
+		Vlan:         vlan,
+		HardwareAddr: mac,
+	}
+	if err := netLinkOps.NeighDel(neigh); err != nil {
+		return fmt.Errorf("failed to delete FDB entry %s vlan %d from %s: %w", mac, vlan, port.Attrs().Name, err)
+	}
+	return nil
+}
+
 // LinkNeighDel deletes an ip binding for a given link
 func LinkNeighDel(link netlink.Link, neighIP net.IP) error {
 	neigh := &netlink.Neigh{
@@ -608,7 +650,7 @@ func LinkNeighDel(link netlink.Link, neighIP net.IP) error {
 	}
 	err := netLinkOps.NeighDel(neigh)
 	if err != nil {
-		return fmt.Errorf("failed to delete neighbour entry %+v: %v", neigh, err)
+		return fmt.Errorf("failed to delete neighbour entry %+v: %w", neigh, err)
 	}
 	return nil
 }
@@ -624,7 +666,7 @@ func LinkNeighAdd(link netlink.Link, neighIP net.IP, neighMAC net.HardwareAddr) 
 	}
 	err := netLinkOps.NeighAdd(neigh)
 	if err != nil {
-		return fmt.Errorf("failed to add neighbour entry %+v: %v", neigh, err)
+		return fmt.Errorf("failed to add neighbour entry %+v: %w", neigh, err)
 	}
 	return nil
 }

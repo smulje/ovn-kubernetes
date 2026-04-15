@@ -749,7 +749,7 @@ build_dnsnameresolver_images() {
   rm -rf /tmp/coredns-ocp-dnsnameresolver
   git clone https://github.com/openshift/coredns-ocp-dnsnameresolver.git /tmp/coredns-ocp-dnsnameresolver
   pushd /tmp/coredns-ocp-dnsnameresolver
-  git checkout release-4.21
+  git checkout release-4.22
   popd
  
   build_image /tmp/coredns-ocp-dnsnameresolver ${COREDNS_WITH_OCP_DNSNAMERESOLVER} Dockerfile.upstream
@@ -852,13 +852,7 @@ install_dnsnameresolver_operator() {
   sed -i -e 's/^\(.*--coredns-namespace=\).*/\1kube-system/' \
     -e 's/^\(.*--coredns-service-name=\).*/\1kube-dns/' \
     -e 's/^\(.*--dns-name-resolver-namespace=\).*/\1ovn-kubernetes/' \
-    -e 's/^\(.*--coredns-port=\).*/\153/' config/default/manager_auth_proxy_patch.yaml
-
-  # gcr.io Container Registry shutdown issue
-  # See https://github.com/kubernetes-sigs/kubebuilder/discussions/3907#discussioncomment-11477582 for more details.
-  # REVERT ME: when coredns team fixes image in upstream, we can revert this patch.
-  sed -i 's|gcr.io/kubebuilder/kube-rbac-proxy|registry.k8s.io/kubebuilder/kube-rbac-proxy|g' \
-    config/default/manager_auth_proxy_patch.yaml
+    -e 's/^\(.*--coredns-port=\).*/\153/' config/default/manager_dnsnameresolver_patch.yaml
 
   make install CONTROLLER_TOOLS_VERSION=v0.19.0
   make deploy IMG=${DNSNAMERESOLVER_OPERATOR} CONTROLLER_TOOLS_VERSION=v0.19.0
@@ -977,10 +971,11 @@ clone_frr() {
     # https://github.com/FRRouting/frr/pull/15714).
     #
     # Bump to 10.4.1 for upstream demo was posted here: https://github.com/metallb/frr-k8s/pull/404
-    # We bump further to 10.4.2 to include additional fixes for EVPN:
+    # We bump further to 10.4.3 to include additional fixes for EVPN:
     # https://github.com/ovn-kubernetes/ovn-kubernetes/pull/5874#issuecomment-3907335193
     # https://github.com/ovn-kubernetes/ovn-kubernetes/pull/5874#issuecomment-3898408592
-    sed -i 's|quay.io/frrouting/frr:9.1.0|quay.io/frrouting/frr:10.4.2|g' hack/demo/demo.sh
+    # https://github.com/FRRouting/frr/pull/20496
+    sed -i 's|quay.io/frrouting/frr:[0-9.]*|quay.io/frrouting/frr:10.4.3|g' hack/demo/demo.sh
 
     popd
 
@@ -1042,6 +1037,16 @@ deploy_frr_external_container() {
     # Neighbors are already configured by demo.sh; extract them from the running config.
     # This is cluster-level infrastructure shared across all EVPN tests; configured once
     # at install time so individual tests don't need to manage it.
+    # Wait for FRR daemons to be ready ("Not all daemons are up, cannot write config").
+    local attempts=0 daemon_status
+    while ! daemon_status=$($OCI_BIN exec frr vtysh -c "show daemons" 2>&1); do
+      if (( ++attempts > 30 )); then
+        echo "error: FRR daemons did not become ready after 30 attempts"
+        echo "last daemon status: $daemon_status"
+        exit 1
+      fi
+      sleep 1
+    done
     local bgp_neighbors vtysh_cmds
     bgp_neighbors=$($OCI_BIN exec frr vtysh -c "show running-config" | grep "^ neighbor.*remote-as" | awk '{print $2}')
     vtysh_cmds=(-c "configure terminal" -c "router bgp 64512" -c "address-family l2vpn evpn")
@@ -1162,6 +1167,10 @@ install_frr_k8s() {
   # Use the same image from the Kubernetes community registry instead.
   # REVERT ME: when https://github.com/metallb/metallb/issues/2619 is fixed
   sed -i 's|gcr.io/kubebuilder/kube-rbac-proxy|registry.k8s.io/kubebuilder/kube-rbac-proxy|g' \
+    "${FRR_TMP_DIR}"/frr-k8s/config/all-in-one/frr-k8s.yaml
+  # Bump frr in frr-k8s to 10.4.3 to consume the following fix
+  # https://github.com/FRRouting/frr/pull/20496
+  sed -i 's|quay.io/frrouting/frr:[0-9.]*|quay.io/frrouting/frr:10.4.3|g' \
     "${FRR_TMP_DIR}"/frr-k8s/config/all-in-one/frr-k8s.yaml
   if [ "${bgp_port}" -ne 0 ]; then
     local frr_yaml="${FRR_TMP_DIR}/frr-k8s/config/all-in-one/frr-k8s.yaml"
