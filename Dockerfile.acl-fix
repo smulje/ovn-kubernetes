@@ -1,6 +1,9 @@
 # Multi-stage build for OVN Kubernetes with ACL security fix
 # Stage 1: Build the ovnkube binary with ACL fix
-FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
+FROM golang:1.24 AS builder
+
+# Install required build dependencies
+RUN apt-get update && apt-get install -y gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /go/src/github.com/openshift/ovn-kubernetes
 COPY . .
