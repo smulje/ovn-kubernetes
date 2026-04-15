@@ -1094,6 +1094,35 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		}
 		return nil
 
+	case factory.EgressFirewallType:
+		oldEgressFirewall := oldObj.(*egressfirewall.EgressFirewall)
+		newEgressFirewall := newObj.(*egressfirewall.EgressFirewall).DeepCopy()
+
+		// Validate the new egress firewall rules FIRST before deleting the old ACLs.
+		// This prevents a security gap where ACLs are deleted but validation fails,
+		// leaving the namespace without egress firewall protection.
+		if _, err := h.oc.buildEgressFirewallConstruct(newEgressFirewall); err != nil {
+			if statusErr := h.oc.setEgressFirewallStatus(newEgressFirewall, err); statusErr != nil {
+				klog.Errorf("Failed to update egress firewall status %s, error: %v",
+					getEgressFirewallNamespacedName(newEgressFirewall), statusErr)
+			}
+			return err
+		}
+
+		// Validation passed, now safe to delete old and add new
+		if err := h.oc.deleteEgressFirewall(oldEgressFirewall); err != nil {
+			return err
+		}
+		err := h.oc.addEgressFirewall(newEgressFirewall)
+		if statusErr := h.oc.setEgressFirewallStatus(newEgressFirewall, err); statusErr != nil {
+			klog.Errorf("Failed to update egress firewall status %s, error: %v",
+				getEgressFirewallNamespacedName(newEgressFirewall), statusErr)
+		}
+		if err == nil {
+			metrics.UpdateEgressFirewallRuleCount(float64(len(newEgressFirewall.Spec.Egress) - len(oldEgressFirewall.Spec.Egress)))
+		}
+		return err
+
 	case factory.NamespaceType:
 		oldNs, newNs := oldObj.(*corev1.Namespace), newObj.(*corev1.Namespace)
 		return h.oc.updateNamespace(oldNs, newNs)
