@@ -1,0 +1,21 @@
+# Multi-stage build for OVN Kubernetes with ACL security fix
+# Stage 1: Build the ovnkube binary with ACL fix
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
+
+WORKDIR /go/src/github.com/openshift/ovn-kubernetes
+COPY . .
+RUN cd go-controller && CGO_ENABLED=1 make
+
+# Stage 2: Use the current cluster's OVN image as base and replace binary
+FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:492636bcc242efbed9b25e2892c750643b74786a86c6702f425d78cf81624371
+
+USER root
+
+# Replace the ovnkube binary with our fixed version
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube /usr/bin/ovnkube
+
+# Ensure binary is executable
+RUN chmod +x /usr/bin/ovnkube
+
+WORKDIR /root
+ENTRYPOINT /root/ovnkube.sh
