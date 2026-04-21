@@ -1,24 +1,44 @@
-# Multi-stage build for ECMP route fix (OCPBUGS-70272)
+# ECMP route fix build (OCPBUGS-70272)
+# Based on dist/images/Dockerfile.fedora but using cluster base image
 
-# Stage 1: Build ovnkube binary from source using OpenShift builder
-FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
-
-WORKDIR /go/src/github.com/openshift/ovn-kubernetes
-
-# Copy source code
-COPY . .
-
-# Build ovnkube with same settings as main Dockerfile
-RUN cd go-controller && CGO_ENABLED=1 make
-
-# Stage 2: Use cluster base image with fixed binary
-FROM registry.ci.openshift.org/ocp/4.20:ovn-kubernetes-base
+# Stage 1: Build ovnkube from source
+FROM quay.io/fedora/fedora:42 AS builder
 
 USER root
 
-# Copy the fixed ovnkube binary from builder stage
-COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube /usr/bin/ovnkube
+ENV PYTHONDONTWRITEBYTECODE yes
 
-RUN chmod +x /usr/bin/ovnkube
+# Install build dependencies
+RUN dnf install --best --refresh -y --setopt=tsflags=nodocs \
+    git \
+    golang \
+    make \
+    gcc \
+    && dnf clean all && rm -rf /var/cache/dnf/*
+
+WORKDIR /root/ovn-kubernetes
+COPY . .
+
+# Build ovnkube and other binaries
+RUN cd go-controller && CGO_ENABLED=1 make
+
+# Stage 2: Use cluster base image
+FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:53ecbed423371b09c2867ebbc1ad10dbc259eb69a1dadb0162a491548a503d8a
+
+USER root
+
+# Copy ALL built binaries (not just ovnkube)
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovnkube /usr/bin/ovnkube
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-identity /usr/bin/ovnkube-identity
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovn-kube-util /usr/bin/ovn-kube-util
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovn-k8s-cni-overlay /usr/libexec/cni/ovn-k8s-cni-overlay
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovndbchecker /usr/bin/ovndbchecker
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-trace /usr/bin/ovnkube-trace
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/hybrid-overlay-node /usr/bin/hybrid-overlay-node
+COPY --from=builder /root/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-observ /usr/bin/ovnkube-observ
+
+RUN chmod +x /usr/bin/ovnkube /usr/bin/ovnkube-identity /usr/bin/ovn-kube-util \
+    /usr/libexec/cni/ovn-k8s-cni-overlay /usr/bin/ovndbchecker /usr/bin/ovnkube-trace \
+    /usr/bin/hybrid-overlay-node /usr/bin/ovnkube-observ
 
 USER 1001
