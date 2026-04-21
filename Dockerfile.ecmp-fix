@@ -1,18 +1,18 @@
 # Multi-stage build for ECMP route fix (OCPBUGS-70272)
 
-# Stage 1: Build ovnkube binary from source
-FROM golang:1.24 AS builder
+# Stage 1: Build ovnkube binary from source using OpenShift builder
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
 
 WORKDIR /go/src/github.com/openshift/ovn-kubernetes
 
 # Copy source code
 COPY . .
 
-# Build ovnkube
+# Build ovnkube with same settings as main Dockerfile
 RUN cd go-controller && CGO_ENABLED=1 make
 
 # Stage 2: Use cluster base image with fixed binary
-FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:53ecbed423371b09c2867ebbc1ad10dbc259eb69a1dadb0162a491548a503d8a
+FROM registry.ci.openshift.org/ocp/4.20:ovn-kubernetes-base
 
 USER root
 
