@@ -1,0 +1,58 @@
+# Modified Dockerfile for OCPBUGS-78765 - skips dnf install since base image has packages
+# Build RHEL-9 binaries
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
+
+WORKDIR /go/src/github.com/openshift/ovn-kubernetes
+COPY . .
+RUN cd go-controller; CGO_ENABLED=1 make
+RUN cd go-controller; CGO_ENABLED=0 make windows
+
+# Build RHEL-8 binaries (for upgrades from 4.12 and earlier)
+FROM registry.ci.openshift.org/ocp/builder:rhel-8-golang-1.24-openshift-4.20 AS rhel8
+WORKDIR /go/src/github.com/openshift/ovn-kubernetes
+COPY . .
+RUN cd go-controller; CGO_ENABLED=1 make
+
+# Use ovn-kubernetes-base which already has runtime dependencies
+FROM registry.ci.openshift.org/ocp/4.20:ovn-kubernetes-base
+
+USER root
+
+ENV PYTHONDONTWRITEBYTECODE yes
+
+# SKIP dnf install - base image already has the packages from internal build
+# This avoids needing access to base-4-20-rhel9.ocp.svc repos
+
+# Copy binaries from builders - matching original Dockerfile paths
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-identity /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-kube-util /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-k8s-cni-overlay /usr/libexec/cni/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/windows/hybrid-overlay-node.exe /root/windows/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovndbchecker /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-trace /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/hybrid-overlay-node /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-observ /usr/bin/
+
+# Copy RHEL-8 and RHEL-9 shim binaries for CNO startup script
+RUN mkdir -p /usr/libexec/cni/rhel9
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-k8s-cni-overlay /usr/libexec/cni/rhel9/
+RUN mkdir -p /usr/libexec/cni/rhel8
+COPY --from=rhel8 /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-k8s-cni-overlay /usr/libexec/cni/rhel8/
+# Copy RHEL-8 ovnkube-trace for RHEL-8 platform
+RUN mkdir -p /usr/lib/rhel8
+COPY --from=rhel8 /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-trace /usr/lib/rhel8/
+
+# Verify oc binary exists (from base image or previous package install)
+RUN stat /usr/bin/oc || echo "Warning: oc binary not found"
+
+LABEL io.k8s.display-name="ovn kubernetes" \
+      io.k8s.description="This is a component of OpenShift Container Platform that provides an overlay network using ovn." \
+      summary="This is a component of OpenShift Container Platform that provides an overlay network using ovn." \
+      io.openshift.tags="openshift" \
+      maintainer="smulje@redhat.com"
+
+WORKDIR /root
+ENTRYPOINT /root/ovnkube.sh
+
+USER 1001
