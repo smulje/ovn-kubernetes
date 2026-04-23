@@ -1,0 +1,31 @@
+# Dockerfile for OCPBUGS-78765 - Customer cluster build with public base image
+# Build RHEL-9 binaries
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20 AS builder
+
+WORKDIR /go/src/github.com/openshift/ovn-kubernetes
+COPY . .
+RUN cd go-controller; CGO_ENABLED=1 make
+
+# Use public 4.20 base image
+FROM quay.io/openshift/origin-ovn-kubernetes:4.20
+
+USER root
+
+ENV PYTHONDONTWRITEBYTECODE yes
+
+# Copy fixed binaries from builder
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-identity /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-kube-util /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovn-k8s-cni-overlay /usr/libexec/cni/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovndbchecker /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-trace /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/hybrid-overlay-node /usr/bin/
+COPY --from=builder /go/src/github.com/openshift/ovn-kubernetes/go-controller/_output/go/bin/ovnkube-observ /usr/bin/
+
+LABEL io.k8s.display-name="ovn kubernetes with ACL security fix" \
+      io.k8s.description="EgressFirewall ACL Security Fix (OCPBUGS-78765)" \
+      io.openshift.tags="openshift" \
+      maintainer="smulje@redhat.com"
+
+USER 1001
