@@ -324,6 +324,13 @@ func (oc *DefaultNetworkController) addEgressFirewall(egressFirewall *egressfire
 		return err
 	}
 
+	return oc.addEgressFirewallWithConstruct(egressFirewall, ef)
+}
+
+// addEgressFirewallWithConstruct adds an egress firewall using a pre-validated construct.
+// This is used by the update path to avoid TOCTOU issues where validation could
+// change between the initial validation and the actual add.
+func (oc *DefaultNetworkController) addEgressFirewallWithConstruct(egressFirewall *egressfirewallapi.EgressFirewall, ef *egressFirewall) error {
 	ef.Lock()
 	defer ef.Unlock()
 	// egressFirewall may already exist, if previous add failed, cleanup

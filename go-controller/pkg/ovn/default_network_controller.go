@@ -1101,7 +1101,11 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		// Validate the new egress firewall rules FIRST before deleting the old ACLs.
 		// This prevents a security gap where ACLs are deleted but validation fails,
 		// leaving the namespace without egress firewall protection.
-		if _, err := h.oc.buildEgressFirewallConstruct(newEgressFirewall); err != nil {
+		//
+		// IMPORTANT: We validate once here and reuse the validated construct to avoid
+		// TOCTOU issues where node state could change between validation and application.
+		validatedEF, err := h.oc.buildEgressFirewallConstruct(newEgressFirewall)
+		if err != nil {
 			if statusErr := h.oc.setEgressFirewallStatus(newEgressFirewall, err); statusErr != nil {
 				klog.Errorf("Failed to update egress firewall status %s, error: %v",
 					getEgressFirewallNamespacedName(newEgressFirewall), statusErr)
@@ -1109,18 +1113,22 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 			return err
 		}
 
-		// Validation passed, now safe to delete old and add new
+		// Validation passed, now safe to delete old and add new.
+		// Decrement metrics for old firewall (mirroring DeleteResource logic).
 		if err := h.oc.deleteEgressFirewall(oldEgressFirewall); err != nil {
 			return err
 		}
-		err := h.oc.addEgressFirewall(newEgressFirewall)
+		metrics.UpdateEgressFirewallRuleCount(float64(-len(oldEgressFirewall.Spec.Egress)))
+		metrics.DecrementEgressFirewallCount()
+
+		// Add new firewall using the pre-validated construct to avoid re-validation.
+		err = h.oc.addEgressFirewallWithConstruct(newEgressFirewall, validatedEF)
 		if statusErr := h.oc.setEgressFirewallStatus(newEgressFirewall, err); statusErr != nil {
 			klog.Errorf("Failed to update egress firewall status %s, error: %v",
 				getEgressFirewallNamespacedName(newEgressFirewall), statusErr)
 		}
-		if err == nil {
-			metrics.UpdateEgressFirewallRuleCount(float64(len(newEgressFirewall.Spec.Egress) - len(oldEgressFirewall.Spec.Egress)))
-		}
+		// Note: setEgressFirewallStatus increments metrics on success, so no additional
+		// metrics calls needed here.
 		return err
 
 	case factory.NamespaceType:
