@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -173,15 +174,24 @@ func (m *anpZoneDeleteCleanupManager) cleanupStaleStatusConditions(currentZones 
 			klog.Infof("StatusManager: found %d stale status conditions in ANP %s", len(staleZones), anp.Name)
 			totalStaleEntries += len(staleZones)
 
-			// Remove stale zones one by one using Server-Side Apply
+			// Remove each stale condition from the object we already have
+			// No need to call Get() - we use the object from List() and rely on
+			// optimistic concurrency control via ResourceVersion in UpdateStatus()
+			modified := false
 			for _, staleZone := range staleZones {
-				applyObj := anpapiapply.AdminNetworkPolicy(anp.Name)
-				_, err := m.client.PolicyV1alpha1().AdminNetworkPolicies().
-					ApplyStatus(context.TODO(), applyObj, metav1.ApplyOptions{FieldManager: staleZone, Force: true})
+				conditionType := policyReadyStatusType + staleZone
+				if meta.RemoveStatusCondition(&anp.Status.Conditions, conditionType) {
+					modified = true
+					klog.V(4).Infof("StatusManager: removed condition %s from ANP %s", conditionType, anp.Name)
+				}
+			}
+
+			if modified {
+				_, err := m.client.PolicyV1alpha1().AdminNetworkPolicies().UpdateStatus(context.TODO(), anp, metav1.UpdateOptions{})
 				if err != nil {
-					klog.Warningf("StatusManager: failed to remove stale zone %s from ANP %s: %v", staleZone, anp.Name, err)
+					klog.Warningf("StatusManager: failed to update ANP %s status: %v", anp.Name, err)
 				} else {
-					klog.V(4).Infof("StatusManager: removed stale zone %s from ANP %s", staleZone, anp.Name)
+					klog.Infof("StatusManager: removed %d stale zone(s) from ANP %s", len(staleZones), anp.Name)
 				}
 			}
 		}
@@ -194,15 +204,24 @@ func (m *anpZoneDeleteCleanupManager) cleanupStaleStatusConditions(currentZones 
 			klog.Infof("StatusManager: found %d stale status conditions in BANP %s", len(staleZones), banp.Name)
 			totalStaleEntries += len(staleZones)
 
-			// Remove stale zones one by one using Server-Side Apply
+			// Remove each stale condition from the object we already have
+			// No need to call Get() - we use the object from List() and rely on
+			// optimistic concurrency control via ResourceVersion in UpdateStatus()
+			modified := false
 			for _, staleZone := range staleZones {
-				applyObj := anpapiapply.BaselineAdminNetworkPolicy(banp.Name)
-				_, err := m.client.PolicyV1alpha1().BaselineAdminNetworkPolicies().
-					ApplyStatus(context.TODO(), applyObj, metav1.ApplyOptions{FieldManager: staleZone, Force: true})
+				conditionType := policyReadyStatusType + staleZone
+				if meta.RemoveStatusCondition(&banp.Status.Conditions, conditionType) {
+					modified = true
+					klog.V(4).Infof("StatusManager: removed condition %s from BANP %s", conditionType, banp.Name)
+				}
+			}
+
+			if modified {
+				_, err := m.client.PolicyV1alpha1().BaselineAdminNetworkPolicies().UpdateStatus(context.TODO(), banp, metav1.UpdateOptions{})
 				if err != nil {
-					klog.Warningf("StatusManager: failed to remove stale zone %s from BANP %s: %v", staleZone, banp.Name, err)
+					klog.Warningf("StatusManager: failed to update BANP %s status: %v", banp.Name, err)
 				} else {
-					klog.V(4).Infof("StatusManager: removed stale zone %s from BANP %s", staleZone, banp.Name)
+					klog.Infof("StatusManager: removed %d stale zone(s) from BANP %s", len(staleZones), banp.Name)
 				}
 			}
 		}
