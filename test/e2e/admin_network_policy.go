@@ -19,7 +19,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 
-	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider"
 
 	anpapi "sigs.k8s.io/network-policy-api/apis/v1alpha1"
 	anpclientset "sigs.k8s.io/network-policy-api/pkg/client/clientset/versioned"
