@@ -157,10 +157,10 @@ func (m *typedStatusManager[T]) doStartupCleanup(zones sets.Set[string]) error {
 	for _, obj := range objects {
 		managedFields := m.resource.getManagedFields(obj)
 
-		// Check for stale empty-status managedFields
+		// Check for stale status managedFields
 		for _, mf := range managedFields {
-			if !zones.Has(mf.Manager) && isEmptyStatusManagedField(mf) {
-				klog.V(5).Infof("StatusManager %s: cleaning up stale empty-status managedField for manager: %s", m.name, mf.Manager)
+			if !zones.Has(mf.Manager) && mf.Subresource == "status" {
+				klog.V(5).Infof("StatusManager %s: cleaning up stale status managedField for manager: %s", m.name, mf.Manager)
 				applyAsZoneController := &metav1.ApplyOptions{
 					Force:        true,
 					FieldManager: mf.Manager,
