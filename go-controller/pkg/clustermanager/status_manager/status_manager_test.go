@@ -28,6 +28,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	adminpolicybasedrouteapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1"
 	egressfirewallapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
+	egressfirewallapply "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/applyconfiguration/egressfirewall/v1"
 	egressfirewallfake "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned/fake"
 	egressqosapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1"
 	networkqosapi "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/crd/networkqos/v1alpha1"
@@ -884,6 +885,73 @@ var _ = Describe("Cluster Manager Status Manager", func() {
 			}},
 		}, fakeClient)
 		checkNQStatusEventually(networkQoS, false, false, fakeClient)
+	})
+
+	It("cleans up stale zone status and managedFields during startup with server-side apply", func() {
+		config.OVNKubernetesFeature.EnableEgressFirewall = true
+		namespace1 := util.NewNamespace(namespace1Name)
+		egressFirewall := newEgressFirewall(namespace1.Name)
+		zones := sets.New("zone1", "zone2")
+
+		objects := []runtime.Object{namespace1}
+		for _, zone := range zones.UnsortedList() {
+			objects = append(objects, getNodeWithZone(zone, zone))
+		}
+		fakeClient = util.GetOVNClientset(objects...).GetClusterManagerClientset()
+		efSSAClient := egressfirewallfake.NewClientset(egressFirewall)
+		fakeClient.EgressFirewallClient = efSSAClient
+		efClient := efSSAClient.K8sV1().EgressFirewalls(namespace1.Name)
+
+		ctx := context.TODO()
+		applyZoneMessage := func(zone, message string) {
+			applyObj := egressfirewallapply.EgressFirewall(egressFirewall.Name, egressFirewall.Namespace).
+				WithStatus(egressfirewallapply.EgressFirewallStatus().WithMessages(types.GetZoneStatus(zone, message)))
+			var err error
+			egressFirewall, err = efClient.ApplyStatus(ctx, applyObj, metav1.ApplyOptions{FieldManager: zone, Force: true})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		applyZoneMessage("zone1", "OK")
+		applyZoneMessage("zone2", "OK")
+		applyZoneMessage("zone3", "OK")
+
+		// Stale empty status managedField from a deleted zone (upgrade scenario).
+		_, err := efClient.ApplyStatus(ctx,
+			egressfirewallapply.EgressFirewall(egressFirewall.Name, egressFirewall.Namespace),
+			metav1.ApplyOptions{FieldManager: "zone4-deleted", Force: true})
+		Expect(err).NotTo(HaveOccurred())
+
+		wf, err = factory.NewClusterManagerWatchFactory(fakeClient)
+		Expect(err).NotTo(HaveOccurred())
+		statusManager = NewStatusManager(wf, fakeClient, networkmanager.Default().Interface())
+		Expect(wf.Start()).NotTo(HaveOccurred())
+		Expect(statusManager.Start()).NotTo(HaveOccurred())
+
+		zone1Msg := types.GetZoneStatus("zone1", "OK")
+		zone2Msg := types.GetZoneStatus("zone2", "OK")
+		zone3Msg := types.GetZoneStatus("zone3", "OK")
+
+		Eventually(func() bool {
+			ef, getErr := efClient.Get(ctx, egressFirewall.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return false
+			}
+
+			statusManagers := sets.New[string]()
+			for _, mf := range ef.ManagedFields {
+				if mf.Subresource == "status" {
+					statusManagers.Insert(mf.Manager)
+				}
+			}
+			if statusManagers.Has("zone3") || statusManagers.Has("zone4-deleted") {
+				return false
+			}
+			if !statusManagers.Has("zone1") || !statusManagers.Has("zone2") {
+				return false
+			}
+
+			gotMessages := sets.New(ef.Status.Messages...)
+			return !gotMessages.Has(zone3Msg) && gotMessages.Has(zone1Msg) && gotMessages.Has(zone2Msg)
+		}, 5).Should(BeTrue(), "stale zone3 message, zone3 managedField, and zone4-deleted empty managedField should be removed; zone1/zone2 preserved")
 	})
 
 })
