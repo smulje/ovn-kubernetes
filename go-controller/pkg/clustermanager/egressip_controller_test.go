@@ -4365,6 +4365,35 @@ var _ = ginkgo.Describe("OVN cluster-manager EgressIP Operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 
+		ginkgo.It("should preserve pre-existing annotations when adding the mark annotation", func() {
+			app.Action = func(*cli.Context) error {
+				objMeta := newEgressIPMeta(egressIPName)
+				objMeta.Annotations = map[string]string{
+					"argocd.argoproj.io/tracking-id": "openshift-gitops:k8s.ovn.org/EgressIP:openshift-gitops/openshift-gitops",
+				}
+				eIP := egressipv1.EgressIP{ObjectMeta: objMeta}
+				fakeClusterManagerOVN.start(&egressipv1.EgressIPList{Items: []egressipv1.EgressIP{eIP}})
+				_, err := fakeClusterManagerOVN.eIPC.WatchEgressIP()
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+				ginkgo.By("ensure the mark annotation gets added")
+				gomega.Eventually(func() string {
+					mark, err := getEgressIPAnnotationValue(eIP.Name)()
+					gomega.Expect(err).Should(gomega.Succeed(), "failed to get mark from annotation")
+					return mark
+				}).ShouldNot(gomega.Equal(""))
+
+				ginkgo.By("ensure the pre-existing annotation was not wiped out by the mark patch")
+				updated, err := fakeClusterManagerOVN.fakeClient.EgressIPClient.K8sV1().EgressIPs().Get(context.TODO(), eIP.Name, metav1.GetOptions{})
+				gomega.Expect(err).NotTo(gomega.HaveOccurred())
+				gomega.Expect(updated.Annotations).To(gomega.HaveKeyWithValue(
+					"argocd.argoproj.io/tracking-id", "openshift-gitops:k8s.ovn.org/EgressIP:openshift-gitops/openshift-gitops"))
+				return nil
+			}
+			err := app.Run([]string{app.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+
 		// This test validates that when two EgressIP CRs have the same IP in their specs,
 		// and one already has the IP assigned in status (from before restart), the sync
 		// function properly pre-populates the allocator cache to prevent duplicate assignment.
